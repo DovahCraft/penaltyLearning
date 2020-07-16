@@ -20,30 +20,29 @@ modelSelectionC <- structure(function # Exact model selection function
   stopifnot(length(loss.vec) == length(model.complexity))
   stopifnot(length(model.id) == length(model.complexity))
   n.models <- length(loss.vec)
-  after.vec <- rep(-1L, n.models)
-  lambda.vec <- rep(-1, n.models)
   result.list <- .C(
-    "modelSelection_interface",
+    "modelSelectionFwd_interface",
     loss.vec=as.double(loss.vec),
     model.complexity=as.double(model.complexity),
     n.models=as.integer(n.models),
-    after.vec=as.integer(after.vec),
-    lambda.vec=as.double(lambda.vec),
+    selected.model.vec=integer(n.models),
+    pen.break.vec=double(n.models),
+    loop.eval.vec=integer(n.models),
     PACKAGE="penaltyLearning")
-  is.out <- 0 < result.list$lambda.vec
-  lambda.out <- result.list$lambda.vec[is.out]
-  i <- c(n.models, result.list$after.vec[is.out]+1)
-  min.lambda <- c(0, lambda.out)
-  max.lambda <- c(lambda.out, Inf)
+  index.vec <- (result.list$n.models+1L):1
+  selected <- result.list$selected.model.vec[index.vec]+1L
+  max.lambda <- result.list$pen.break.vec[index.vec]
+  min.lambda <- c(0, max.lambda[-length(max.lambda)])
   data.frame(
     min.lambda,
     max.lambda,
     min.log.lambda = log(min.lambda),
     max.log.lambda = log(max.lambda),
-    model.complexity = model.complexity[i],
-    model.id=model.id[i],
-    model.loss=loss.vec[i],
-    row.names=model.id[i])
+    cum.iterations=cumsum(result.list$loop.eval.vec)[selected],
+    model.complexity = model.complexity[selected],
+    model.id=model.id[selected],
+    model.loss=loss.vec[selected],
+    row.names=model.id[selected])
 ### data.frame with a row for each model that can be selected for at
 ### least one lambda value, and the following columns. (min.lambda,
 ### max.lambda) and (min.log.lambda, max.log.lambda) are intervals of
@@ -53,13 +52,12 @@ modelSelectionC <- structure(function # Exact model selection function
 ### values.
 },ex=function(){
 
-  library(penaltyLearning)
-  data(neuroblastoma, package="neuroblastoma", envir=environment())
-  pro <- subset(neuroblastoma$profiles, profile.id==1 & chromosome=="X")
-  max.segments <- 20
-  fit <- Segmentor3IsBack::Segmentor(pro$logratio, 2, max.segments)
-  seg.vec <- 1:max.segments
-  exact.df <- modelSelectionC(fit@likelihood, seg.vec, seg.vec)
+  loss.vec <- c(
+    -9.9, -12.8, -19.2, -22.1, -24.5, -26.1, -28.5, -30.1, -32.2, 
+    -33.7, -35.2, -36.8, -38.2, -39.5, -40.7, -41.8, -42.8, -43.9, 
+    -44.9, -45.8)
+  seg.vec <- seq_along(loss.vec)
+  exact.df <- penaltyLearning::modelSelectionC(loss.vec, seg.vec, seg.vec)
   ## Solve the optimization using grid search.
   L.grid <- with(exact.df,{
     seq(min(max.log.lambda)-1,
@@ -84,7 +82,7 @@ modelSelectionC <- structure(function # Exact model selection function
                data=grid.df, color="red", pch=1)+
     ylab("optimal model complexity (segments)")+
     xlab("log(lambda)")
-  
+
 })
 
 modelSelectionR <- structure(function # Exact model selection function
@@ -93,8 +91,8 @@ modelSelectionR <- structure(function # Exact model selection function
 ### the solutions (i, min.lambda, max.lambda) with i being the
 ### solution for every lambda in (min.lambda, max.lambda). This
 ### function uses the quadratic time algorithm implemented in R code.
-### This function is mostly meant for internal use -- it is instead
-### recommended to use modelSelection.
+### This function is mostly meant for internal use and comparison --
+### it is instead recommended to use modelSelection.
  (loss.vec,
 ### numeric vector: loss L_i
   model.complexity,
@@ -116,6 +114,7 @@ modelSelectionR <- structure(function # Exact model selection function
   vL <- 0
   vP <- model.id[n.models]
   i <- 2
+  iterations.vec <- 0
   min.complexity <- model.complexity[1]
   while(Kcurrent > min.complexity) {
     is.smaller <- model.complexity < Kcurrent
@@ -130,6 +129,7 @@ modelSelectionR <- structure(function # Exact model selection function
     Lcurrent <- min(lambdaTransition)
     vL[i] <- Lcurrent
     vK[i] <- Kcurrent
+    iterations.vec[i] <- length(lambdaTransition)
     vP[i] <- smallerID[next.i]
     i <- i + 1
   }
@@ -139,6 +139,7 @@ modelSelectionR <- structure(function # Exact model selection function
     max.lambda = c(vL[-1], Inf),
     min.log.lambda = L,
     max.log.lambda = c(L[-1], Inf),
+    cum.iterations=cumsum(iterations.vec),
     model.complexity = vK,
     model.id=vP,
     model.loss=loss.vec[vP],
@@ -152,31 +153,12 @@ modelSelectionR <- structure(function # Exact model selection function
 ### values.
 },ex=function(){
 
-  if(interactive()){
-    library(penaltyLearning)
-    data(neuroblastoma, package="neuroblastoma", envir=environment())
-    one <- subset(neuroblastoma$profiles, profile.id==599 & chromosome=="14")
-    max.segments <- 1000
-    fit <- Segmentor3IsBack::Segmentor(one$logratio, model=2, Kmax=max.segments)
-    lik.df <- data.frame(lik=fit@likelihood, segments=1:max.segments)
-    times.list <- list()
-    for(n.segments in seq(10, max.segments, by=10)){
-      some.lik <- lik.df[1:n.segments,]
-      some.times <- microbenchmark::microbenchmark(
-        R=pathR <- with(some.lik, modelSelectionR(lik, segments, segments)),
-        C=pathC <- with(some.lik, modelSelectionC(lik, segments, segments)),
-        times=5)
-      times.list[[paste(n.segments)]] <- data.frame(n.segments, some.times)
-    }
-    times <- do.call(rbind, times.list)
-    ## modelSelectionR and modelSelectionC should give identical results.
-    identical(pathR, pathC)
-    ## However, modelSelectionC is much faster (linear time complexity)
-    ## than modelSelectionR (quadratic time complexity).
-    library(ggplot2)
-    ggplot()+
-      geom_point(aes(n.segments, time/1e9, color=expr), data=times)
-  }
+  loss.vec <- c(
+    -9.9, -12.8, -19.2, -22.1, -24.5, -26.1, -28.5, -30.1, -32.2, 
+    -33.7, -35.2, -36.8, -38.2, -39.5, -40.7, -41.8, -42.8, -43.9, 
+    -44.9, -45.8)
+  seg.vec <- seq_along(loss.vec)
+  penaltyLearning::modelSelectionR(loss.vec, seg.vec, seg.vec)
 
 })
 
@@ -215,13 +197,14 @@ modelSelection <- function # Compute exact model selection function
     is.numeric(models[[complexity]]) &&
     is.numeric(models[[loss]]) &&
     all(!is.na(models[[complexity]])) &&
-    all(!is.na(models[[loss]])) 
+    all(!is.na(models[[loss]]))
   )){
     stop("models must be data.frame with at least one row and numeric columns models[[complexity]] and models[[loss]] which are not missing/NA")
   }
   ord <- order(models[[complexity]], models[[loss]])
   sorted <- models[ord,]
-  keep <- c(TRUE, diff(sorted[[loss]]) < 0)
+  cm <- cummin(sorted[[loss]])
+  keep <- c(TRUE, diff(cm) < 0)
   filtered <- sorted[keep, ]
   loss.vec <- filtered[[loss]]
   complexity.vec <- filtered[[complexity]]

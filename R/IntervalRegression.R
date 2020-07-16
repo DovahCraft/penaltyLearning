@@ -3,7 +3,7 @@ squared.hinge <- function(x, e=1){
   ifelse(x<e,(x-e)^2,0)
 }
 
-IntervalRegressionCVmargin <- structure(function 
+IntervalRegressionCVmargin <- structure(function
 ### Use cross-validation to fit an L1-regularized linear interval
 ### regression model by optimizing both margin and regularization
 ### parameters. This function just calls IntervalRegressionCV with a
@@ -74,7 +74,10 @@ IntervalRegressionCVmargin <- structure(function
 }, ex=function() {
   if(interactive()){
     library(penaltyLearning)
-    data("neuroblastomaProcessed", package="penaltyLearning", envir=environment())
+    data(
+      "neuroblastomaProcessed",
+      package="penaltyLearning",
+      envir=environment())
     if(require(future)){
       plan(multiprocess)
     }
@@ -89,7 +92,7 @@ IntervalRegressionCVmargin <- structure(function
 IntervalRegressionCV <- structure(function
 ### Use cross-validation to fit an L1-regularized linear interval
 ### regression model by optimizing margin and/or regularization
-### parameters. 
+### parameters.
 ### This function repeatedly calls IntervalRegressionRegularized, and by
 ### default assumes that margin=1. To optimize the margin,
 ### specify the margin.vec parameter
@@ -97,12 +100,15 @@ IntervalRegressionCV <- structure(function
 ### (which takes more computation time
 ### but yields more accurate models).
 ### If the future package is available,
-### two levels of future_lapply are used 
+### two levels of future_lapply are used
 ### to parallelize on validation.fold and margin.
 (feature.mat,
 ### Numeric feature matrix, n observations x p features.
   target.mat,
-### Numeric target matrix, n observations x 2 limits.
+### Numeric target matrix, n observations x 2 limits. These should be
+### real-valued (possibly negative). If your data are interval
+### censored positive-valued survival times, you need to log them to
+### obtain target.mat.
   n.folds=ifelse(nrow(feature.mat) < 10, 3L, 5L),
 ### Number of cross-validation folds.
   fold.vec=sample(rep(1:n.folds, l=nrow(feature.mat))),
@@ -117,7 +123,7 @@ IntervalRegressionCV <- structure(function
 ### loop. min: first take the mean of the K-CV error functions, then
 ### minimize it (this is the default since it tends to yield the least
 ### test error). 1sd: take the most regularized model with the same
-### margin which is within one standard deviation of that minimum 
+### margin which is within one standard deviation of that minimum
 ### (this model is typically a bit less accurate, but much less
 ### complex, so better if you want to interpret the coefficients).
   incorrect.labels.db=NULL,
@@ -143,6 +149,16 @@ IntervalRegressionCV <- structure(function
 ### time is linear in the number of elements of margin.vec -- more
 ### values takes more computation time, but yields slightly more
 ### accurate models (if there is enough data).
+  LAPPLY=NULL,
+### Function to use for parallelization, by default
+### future.apply::future_lapply if it is available, otherwise
+### lapply. For debugging with verbose>0 it is useful to specify
+### LAPPLY=lapply in order to interactively see messages, before all
+### parallel processes end.
+  check.unlogged=TRUE,
+### If TRUE, stop with an error if target matrix is non-negative and
+### has any big difference in successive quantiles (this is an
+### indicator that the user probably forgot to log their outputs).
  ...
 ### passed to IntervalRegressionRegularized.
 ){
@@ -151,6 +167,13 @@ IntervalRegressionCV <- structure(function
       vjust <- upper.limit <- lower <- upper <- fold <- NULL
 ### The code above is to avoid CRAN NOTEs like
 ### IntervalRegressionCV: no visible binding for global variable
+  if(is.null(LAPPLY)){
+    LAPPLY <- if(requireNamespace("future.apply")){
+      future.apply::future_lapply
+    }else{
+      lapply
+    }
+  }
   n.observations <- check_features_targets(feature.mat, target.mat)
   stopifnot(is.integer(n.folds))
   stopifnot(is.integer(fold.vec))
@@ -177,6 +200,11 @@ IntervalRegressionCV <- structure(function
   )){
     stop("margin.vec must be a numeric vector of finite margin size parameters")
   }
+  q.vec <- quantile(target.mat[is.finite(target.mat)])
+  big.diff <- q.vec[-1] / q.vec[-length(q.vec)] > 10
+  if(isTRUE(check.unlogged) && all(target.mat >= 0) && any(big.diff)){
+    stop("all targets are non-negative, and there is a big change between quantiles, so outputs are probably un-logged; this function expects real-valued (possibly negative) limits, so please try taking the log of your target matrix, or using check.unlogged=FALSE")
+  }
   fold.limits <- data.table(
     lower=is.finite(target.mat[,1]),
     upper=is.finite(target.mat[,2]),
@@ -189,11 +217,6 @@ IntervalRegressionCV <- structure(function
     stop("some folds have no upper/lower limits; each fold should have at least one upper and one lower limit")
   }
   validation.fold.vec <- unique(fold.vec)
-  LAPPLY <- if(requireNamespace("future.apply")){
-    future.apply::future_lapply
-  }else{
-    lapply
-  }
   validation.data.list <- LAPPLY(validation.fold.vec, function(validation.fold){
     ##print(validation.fold)
     is.validation <- fold.vec == validation.fold
@@ -207,8 +230,8 @@ IntervalRegressionCV <- structure(function
       fit <- IntervalRegressionRegularized(
         train.features, train.targets, verbose=verbose,
         margin=margin,
-        initial.regularization=initial.regularization,
-        ...)
+        initial.regularization=initial.regularization
+      , ...)
       validation.features <- feature.mat[is.validation, , drop=FALSE]
       pred.log.lambda <- fit$predict(validation.features)
       validation.targets <- target.mat[is.validation, , drop=FALSE]
@@ -289,7 +312,8 @@ IntervalRegressionCV <- structure(function
   within.1sd <- first.variable[mean < best.regularization$upper.limit]
   least.complex <- within.1sd[which.max(regularization)]
   dot.dt <- rbind(
-    data.table(type="1sd", least.complex, upper.limit=NA_real_),
+    if(nrow(least.complex))data.table(
+      type="1sd", least.complex, upper.limit=NA_real_),
     data.table(type="min", best.regularization))
   best.margin.folds <- vtall[margin==validation.best$margin]
   color.scale <- scale_color_manual(
@@ -297,6 +321,13 @@ IntervalRegressionCV <- structure(function
       "1sd"="blue",
       "min"="red"))
   selected <- dot.dt[type==reg.type]
+  if(nrow(selected)==0){
+    stop(
+      "reg.type=", reg.type,
+      " undefined; try another reg.type (",
+      paste(dot.dt$type, collapse=","),
+      ") or decrease initial.regularization")
+  }
   gg.bands <- ggplot()+
     ggtitle(paste0(
       "Regularization parameter selection using ",
@@ -373,7 +404,7 @@ IntervalRegressionCV <- structure(function
   fit
 ### List representing regularized linear model.
 }, ex=function(){
-  
+
   if(interactive()){
     library(penaltyLearning)
     data("neuroblastomaProcessed", package="penaltyLearning", envir=environment())
@@ -391,6 +422,7 @@ IntervalRegressionCV <- structure(function
     plot(fit)
     ## Create an incorrect labels data.table (first key is same as
     ## rownames of feature.mat and target.mat).
+    library(data.table)
     errors.per.model <- data.table(neuroblastomaProcessed$errors)
     errors.per.model[, pid.chr := paste0(profile.id, ".", chromosome)]
     setkey(errors.per.model, pid.chr)
@@ -402,7 +434,7 @@ IntervalRegressionCV <- structure(function
       incorrect.labels.db=errors.per.model))
     plot(fit)
   }
-  
+
 })
 
 IntervalRegressionUnregularized <- function
@@ -413,7 +445,7 @@ IntervalRegressionUnregularized <- function
 ### passed to IntervalRegressionRegularized.
  ){
   IntervalRegressionRegularized(
-    ..., 
+    ...,
     initial.regularization=0,
     factor.regularization=NULL)
 ### List representing fit model, see
@@ -429,15 +461,15 @@ check_features_targets <- function
 ### n x 2 matrix of target interval limits.
   ){
   if(!(
-    is.numeric(feature.mat) && 
+    is.numeric(feature.mat) &&
     is.matrix(feature.mat) &&
     is.character(colnames(feature.mat))
   )){
     stop("feature.mat should be a numeric matrix with colnames (input features)")
   }
   if(!(
-    is.numeric(target.mat) && 
-    is.matrix(target.mat) && 
+    is.numeric(target.mat) &&
+    is.matrix(target.mat) &&
     ncol(target.mat) == 2
   )){
     stop("target.mat should be a numeric matrix with two columns (lower and upper limits of correct outputs)")
@@ -664,7 +696,7 @@ print.IntervalRegression <- function(x, ...){
     cat(
       "IntervalRegression model for margin=",
       x$margin, " regularization=",
-      x$regularization.vec, 
+      x$regularization.vec,
       " with weights:\n",
       sep="")
     x <- t(x$pred.param.mat)
@@ -736,8 +768,11 @@ IntervalRegressionInternal <- function
  verbose=2,
 ### Cat messages: for restarts and at the end if >= 1, and for every
 ### iteration if >= 2.
- margin=1
+ margin=1,
 ### Margin size hyper-parameter, default 1.
+  biggest.crit=100
+### Restart FISTA with a bigger Lipschitz (smaller step size) if crit
+### gets larger than this.
  ){
   if(!(
     is.numeric(margin) &&
@@ -782,7 +817,7 @@ IntervalRegressionInternal <- function
   }
   squared.hinge.deriv <- function(x,e=1){
     ifelse(x<e,2*(x-e),0)
-  }  
+  }
   calc.loss <- function(x){
     linear.predictor <- as.numeric(features %*% x)
     left.term <- squared.hinge(linear.predictor-targets[,1], margin)
@@ -797,7 +832,7 @@ IntervalRegressionInternal <- function
     right.term <- squared.hinge.deriv(targets[,2]-linear.predictor, margin)
     full.grad <- features * (left.term-right.term) * weight.vec
     colSums(full.grad)/nrow(full.grad)
-  }    
+  }
   calc.penalty <- function(x){
     regularization * sum(abs(x[-1]))
   }
@@ -847,13 +882,15 @@ IntervalRegressionInternal <- function
 
     if(verbose >= 2){
       cost <- calc.cost(this.iterate)
-      cat(sprintf("%10d cost %10f crit %10.7f\n",
-                  iterate.count,
-                  cost,
-                  stopping.crit))
+      cat(sprintf(
+        "it=%10d cost=%10f crit=%10.7f L=%f\n",
+        iterate.count,
+        cost,
+        stopping.crit,
+        Lipschitz))
     }
     iterate.count <- iterate.count + 1
-    if(any(!is.finite(this.iterate)) || 1e20 < stopping.crit){
+    if(any(!is.finite(this.iterate)) || biggest.crit < stopping.crit){
       if(verbose >= 1){
         cat("restarting with bigger Lipschitz.\n")
       }

@@ -48,11 +48,14 @@ featureVector <- structure(function
 ### Numeric vector of features.
 }, ex=function(){
 
-  data(neuroblastoma, package="neuroblastoma", envir=environment())
+  x <- rnorm(10)
+  penaltyLearning::featureVector(x)
+  if(requireNamespace("neuroblastoma")){
+    data(neuroblastoma, package="neuroblastoma", envir=environment())
+    one <- subset(neuroblastoma$profiles, profile.id=="1" & chromosome=="1")
+    (f.vec <- penaltyLearning::featureVector(one$logratio))
+  }
 
-  one <- subset(neuroblastoma$profiles, profile.id=="1" & chromosome=="1")
-  (f.vec <- featureVector(one$logratio))
-  
 })
 
 featureMatrix <- structure(function
@@ -74,9 +77,9 @@ featureMatrix <- structure(function
   }
   if(!(
     is.character(problem.vars) &&
-    sum(is.na(problem.vars)==0) &&
-    0 < length(problem.vars) &&
-    problem.vars %in% names(data.sequences)
+      0 < length(problem.vars) &&
+      all(!is.na(problem.vars)) &&
+      all(problem.vars %in% names(data.sequences))
   )){
     stop("problem.vars must be a character vector of column names of data.sequences (IDs for separate segmentation problems)")
   }
@@ -98,10 +101,16 @@ featureMatrix <- structure(function
 ### Numeric feature matrix. Some entries may be missing or infinite;
 ### these columns should be removed before model training.
 }, ex=function(){
-  
-  data(neuroblastoma, package="neuroblastoma", envir=environment())
 
-  one <- subset(neuroblastoma$profiles, profile.id %in% c(1,2))
-  f.mat <- featureMatrix(one, c("profile.id", "chromosome"), "logratio")
+  test.df <- data.frame(
+    id=rep(1:2, each=10),
+    x=rnorm(20))
+  penaltyLearning::featureMatrix(test.df, "id", "x")
+  if(requireNamespace("neuroblastoma")){
+    data(neuroblastoma, package="neuroblastoma", envir=environment())
+    one <- subset(neuroblastoma$profiles, profile.id %in% c(1,2))
+    f.mat <- penaltyLearning::featureMatrix(
+      one, c("profile.id", "chromosome"), "logratio")
+  }
 
 })

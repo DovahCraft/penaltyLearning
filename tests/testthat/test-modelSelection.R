@@ -3,6 +3,14 @@ context("modelSelection")
 library(penaltyLearning)
 data(oneSkip)
 
+test_that("no error for odd model/loss values", {
+  loss.df <- data.frame(
+    complexity=0:10,
+    loss=c(10:6, 0, 5:1))
+  selection.df <- modelSelection(loss.df)
+  expect_equal(selection.df$complexity, c(5, 0))
+})
+
 test_that("output intervals computed correctly", {
   df <- with(oneSkip$input, modelSelectionC(error, segments, peaks))
   expect_identical(df$model.complexity, oneSkip$output$model.complexity)
@@ -76,51 +84,6 @@ test_that("error for bad column names", {
   }, "loss must be a column name of models")
 })
 
-library(neuroblastoma)
-library(Segmentor3IsBack)
-data(neuroblastoma)
-one <- subset(neuroblastoma$profiles, profile.id==599 & chromosome=="14")
-max.segments <- 1000
-fit <- Segmentor(one$logratio, model=2, Kmax=max.segments)
-lik.df <- data.frame(lik=fit@likelihood, segments=1:max.segments)
-pathR <- with(lik.df, modelSelectionR(lik, segments, segments))
-pathC <- with(lik.df, modelSelectionC(lik, segments, segments))
-test_that("C code agrees with R code for big data set", {
-  expect_identical(pathR, pathC)
-})
-
-## This is a data set with n=9 data points to segments, but only 8
-## unique data points.
-small <- subset(neuroblastoma$profiles, profile.id==203 & chromosome=="Y")
-max.segments <- 9
-fit <- Segmentor(small$logratio, model=2, Kmax=max.segments)
-rss.vec <- rep(NA, max.segments)
-for(n.segments in 1:max.segments){
-  end <- fit@breaks[n.segments, 1:n.segments]
-  seg.mean.vec <- fit@parameters[n.segments, 1:n.segments]
-  data.before.change <- end[-n.segments]
-  data.after.change <- data.before.change+1
-  pos.before.change <- as.integer(
-    (small$position[data.before.change]+small$position[data.after.change])/2)
-  start <- c(1, data.after.change)
-  data.mean.vec <- rep(seg.mean.vec, end-start+1)
-  rss.vec[n.segments] <- sum((small$logratio-data.mean.vec)^2)
-}
-loss.df <- data.frame(
-  n.segments=1:max.segments,
-  lik=fit@likelihood,
-  loss=rss.vec)
-test_that("biggest n.segments=8 for rss loss", {
-  selection.df <- modelSelection(
-    loss.df, complexity="n.segments")
-  expect_equal(max(selection.df$n.segments), 8)
-})
-test_that("biggest n.segments=8 for lik loss", {
-  selection.df <- modelSelection(
-    loss.df, complexity="n.segments", loss="lik")
-  expect_equal(max(selection.df$n.segments), 8)
-})
-
 ## trivial.
 loss.vec <- c(5,4,4)
 model.complexity <- c(1,2,3)
@@ -134,6 +97,19 @@ test_that("loss not decreasing error in C code", {
       n.models=as.integer(n.models),
       after.vec=integer(n.models),
       lambda.vec=double(n.models),
+      PACKAGE="penaltyLearning")
+  }, "loss not decreasing")
+})
+test_that("loss not decreasing error in C code Fwd", {
+  expect_error({
+    .C(
+      "modelSelectionFwd_interface",
+      loss.vec=as.double(loss.vec),
+      model.complexity=as.double(model.complexity),
+      n.models=as.integer(n.models),
+      after.vec=integer(n.models),
+      lambda.vec=double(n.models),
+      iterations=integer(n.models),
       PACKAGE="penaltyLearning")
   }, "loss not decreasing")
 })
@@ -152,4 +128,112 @@ test_that("complexity not increasing error in C code", {
       lambda.vec=double(n.models),
       PACKAGE="penaltyLearning")
   }, "complexity not increasing")
+})
+test_that("complexity not increasing error in C code Fwd", {
+  expect_error({
+    .C(
+      "modelSelectionFwd_interface",
+      loss.vec=as.double(loss.vec),
+      model.complexity=as.double(model.complexity),
+      n.models=as.integer(n.models),
+      after.vec=integer(n.models),
+      lambda.vec=double(n.models),
+      iterations=integer(n.models),
+      PACKAGE="penaltyLearning")
+  }, "complexity not increasing")
+})
+
+## synthetic data from paper.
+N <- 5
+t <- 1:N
+test_that("2N-3 iterations for worst case synthetic loss values", {
+  df <- data.frame(loss=N-t+(1 < t & t < N)/2, complexity=t)
+  result <- .C(
+    "modelSelectionFwd_interface",
+    loss=as.double(df$loss),
+    complexity=as.double(df$complexity),
+    N=as.integer(nrow(df)),
+    models=integer(nrow(df)),
+    breaks=double(nrow(df)),
+    evals=integer(nrow(df)),
+    PACKAGE="penaltyLearning")
+  expect_equal(result$evals, c(0, 1, 2, 2, 2))
+})
+
+test_that("2N-3 iterations for another worst case", {
+  df <- data.frame(loss=N-t+N*(t!=N), complexity=t)
+  result <- .C(
+    "modelSelectionFwd_interface",
+    loss=as.double(df$loss),
+    complexity=as.double(df$complexity),
+    N=as.integer(nrow(df)),
+    models=integer(nrow(df)),
+    breaks=double(nrow(df)),
+    evals=integer(nrow(df)),
+    PACKAGE="penaltyLearning")
+  expect_equal(result$evals, c(0, 1, 2, 2, 2))
+})
+
+test_that("2N-3 iterations for simple worst case", {
+  df <- data.frame(loss=N-t, complexity=t)
+  result <- .C(
+    "modelSelectionFwd_interface",
+    loss=as.double(df$loss),
+    complexity=as.double(df$complexity),
+    N=as.integer(nrow(df)),
+    models=integer(nrow(df)),
+    breaks=double(nrow(df)),
+    evals=integer(nrow(df)),
+    PACKAGE="penaltyLearning")
+  expect_equal(result$evals, c(0, 1, 2, 2, 2))
+})
+
+test_that("N-1 iterations for best case", {
+  df <- data.frame(loss=N-log(t), complexity=t)
+  if(FALSE){
+    library(ggplot2)
+    ggplot()+
+      geom_abline(aes(
+        slope=complexity, intercept=loss),
+        data=df)+
+      xlim(0, 10)+
+      ylim(0, 10)
+  }
+  result <- .C(
+    "modelSelectionFwd_interface",
+    loss=as.double(df$loss),
+    complexity=as.double(df$complexity),
+    N=as.integer(nrow(df)),
+    models=integer(nrow(df)),
+    breaks=double(nrow(df)),
+    evals=integer(nrow(df)),
+    PACKAGE="penaltyLearning")
+  expect_equal(result$evals, c(0, 1, 1, 1, 1))
+})
+
+test_that("N-1 iterations for another best case", {
+  df <- data.frame(loss=N-round(sqrt(t), 2), complexity=t)
+  result <- .C(
+    "modelSelectionFwd_interface",
+    loss=as.double(df$loss),
+    complexity=as.double(df$complexity),
+    N=as.integer(nrow(df)),
+    models=integer(nrow(df)),
+    breaks=double(nrow(df)),
+    evals=integer(nrow(df)),
+    PACKAGE="penaltyLearning")
+  if(FALSE){
+    library(ggplot2)
+    ggplot()+
+      geom_abline(aes(
+        slope=complexity, intercept=loss),
+        data=df)+
+      xlim(0, 1)+
+      ylim(3, 5)+
+      geom_point(aes(
+        penalty, cost),
+        data=with(result, data.frame(
+          penalty=breaks, cost=loss+complexity*breaks)))
+  }
+  expect_equal(result$evals, c(0, 1, 1, 1, 1))
 })
